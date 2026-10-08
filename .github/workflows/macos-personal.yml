@@ -1,0 +1,69 @@
+name: macOS ARM64 personal build
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 要构建的标签、分支或提交
+        required: true
+        default: v0.29.0
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-personal-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build macOS ARM64 DMG
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      CI: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      # 使用本地临时签名，供 Apple Silicon 运行，不提交 Apple 公证。
+      - name: Build DMG with ad hoc signing
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: |
+          set -euo pipefail
+          pnpm dlx "@tauri-apps/cli@2.11.4" build --target aarch64-apple-darwin --bundles dmg --ci
+      - name: Stage DMG and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/macos-personal
+          find target src-tauri/target -type f -path '*/release/bundle/dmg/*.dmg' -exec cp {} dist/macos-personal/ \; 2>/dev/null || true
+          cd dist/macos-personal
+          compgen -G '*.dmg' >/dev/null || { echo "::error::DMG missing"; exit 1; }
+          shasum -a 256 *.dmg > SHA256SUMS.txt
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: dinotty-macos-arm64-personal
+          path: dist/macos-personal/*
+          if-no-files-found: error
+          retention-days: 30
